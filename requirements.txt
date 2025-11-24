@@ -1,0 +1,10 @@
+google-api-python-client
+google-auth
+gspread
+gspread-formatting
+gspread-dataframe
+oauth2client
+pandas
+openpyxl
+requests
+python-dateutil
