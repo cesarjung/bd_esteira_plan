@@ -1,3 +1,8 @@
+# bd_carteira_para_bd_esteira.py
+# -*- coding: utf-8 -*-
+
+import os
+import json
 import time, datetime, random, re, math
 from typing import List
 from google.oauth2.service_account import Credentials
@@ -10,6 +15,8 @@ ORIGEM_ID   = "1gDktQhF0WIjfAX76J2yxQqEeeBsSfMUPGs5svbf9xGM"
 ABA_ORIGEM  = "BD_Carteira"
 DESTINO_ID  = "1T6HVLBQi21CIeS64tAjI314TYi2795COOCAakzLV-q0"
 ABA_DESTINO = "BD_Esteira"
+
+# Caminho local para rodar NO WINDOWS (continua valendo)
 CRED_FILE   = r"C:\Users\Sirtec\Desktop\Esteira\credenciais.json"
 
 WRITE_CHUNK   = 1200           # linhas por escrita no destino
@@ -17,8 +24,10 @@ INIT_READ_ALL = True           # tenta 1 leitura total A:AC primeiro
 MAX_RETRIES   = 8
 BACKOFF_BASE  = 3.0
 HTTP_TIMEOUT  = 600
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
-          "https://www.googleapis.com/auth/drive"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 # Leitura segmentada (quando all-in-one falha)
 SEG_INIT = 2000                # tamanho inicial do bloco de leitura
@@ -39,7 +48,8 @@ def retry(fn, desc):
 
 _num_re = re.compile(r"[^\d,.\-]")
 def clean_number_br(v):
-    if v is None or v == "": return ""
+    if v is None or v == "": 
+        return ""
     v = _num_re.sub("", str(v))
     if "," in v and "." in v:
         v = v.replace(".", "").replace(",", ".")
@@ -50,8 +60,25 @@ def clean_number_br(v):
     except:
         return ""
 
+# ======================== CREDENCIAIS ========================
+
+def get_credentials():
+    """
+    1) Se existir variável de ambiente GOOGLE_CREDENTIALS (GitHub Actions),
+       usa o JSON dela.
+    2) Senão, usa o arquivo local CRED_FILE (Windows).
+    """
+    env_json = os.getenv("GOOGLE_CREDENTIALS")
+    if env_json:
+        log("🔑 Usando GOOGLE_CREDENTIALS do ambiente.")
+        info = json.loads(env_json)
+        return Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        log(f"🔑 Usando arquivo local de credenciais: {CRED_FILE}")
+        return Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+
 def get_services():
-    creds = Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+    creds = get_credentials()
     http  = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
     api   = build("sheets","v4", http=http).spreadsheets()
     return api
