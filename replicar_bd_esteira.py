@@ -1,4 +1,8 @@
 # replicar_bd_esteira.py
+# -*- coding: utf-8 -*-
+
+import os
+import json
 import datetime, time, random, math, re
 from typing import List, Tuple, Optional
 from google.oauth2.service_account import Credentials
@@ -17,6 +21,7 @@ START_ROW   = 3
 ABA_FONTE   = "BD_Esteira"
 ABA_DESTINO = "BD_Esteira"
 
+# Caminho local para rodar NO WINDOWS
 CRED_FILE   = r"C:\Users\Sirtec\Desktop\Esteira\credenciais.json"
 
 SCOPES       = ["https://www.googleapis.com/auth/spreadsheets",
@@ -49,9 +54,26 @@ def retry(fn, desc: str):
             time.sleep(wait)
     raise RuntimeError(f"{desc} — falhou após {MAX_RETRIES} tentativas.")
 
+# ======================== CREDENCIAIS ========================
+
+def get_credentials():
+    """
+    1) Se existir variável de ambiente GOOGLE_CREDENTIALS (GitHub Actions),
+       usa o JSON dela.
+    2) Senão, usa o arquivo local CRED_FILE (Windows).
+    """
+    env_json = os.getenv("GOOGLE_CREDENTIALS")
+    if env_json:
+        log("🔑 Usando GOOGLE_CREDENTIALS do ambiente.")
+        info = json.loads(env_json)
+        return Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        log(f"🔑 Usando arquivo local de credenciais: {CRED_FILE}")
+        return Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+
 def get_api():
     """Retorna o serviço completo do Sheets (para usar spreadsheets, values, batchUpdate, etc)."""
-    creds = Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+    creds = get_credentials()
     http  = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
     return build("sheets", "v4", http=http)
 
@@ -225,7 +247,7 @@ def escrever_destino(service, dest_id: str, sheet_title: str, dados: List[List[s
 
     total = len(dados)
 
-    # *** NOVO: garante que a aba tenha linhas suficientes ***
+    # garante que a aba tenha linhas suficientes
     ensure_sheet_size(service, dest_id, sheet_title, min_rows=total, min_cols=5)
 
     chunks = math.ceil(total / WRITE_CHUNK)
