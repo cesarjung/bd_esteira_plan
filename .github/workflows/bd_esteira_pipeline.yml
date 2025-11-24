@@ -31,7 +31,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: 1) BD_Carteira → BD_Esteira
-        run: python bd_carteira_para_bd_esteira.py
+        run: python exportar_esteira_carteira.py
 
       - name: 2) Replicar BD_Esteira para destinos
         run: python replicar_bd_esteira.py
