@@ -1,0 +1,37 @@
+name: BD_Esteira Pipeline
+
+on:
+  schedule:
+    # 09:00, 14:00, 17:00, 20:00 (Horário Brasília, UTC-3)
+    #  → 12, 17, 20, 23 em UTC
+    - cron: "0 12,17,20,23 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    env:
+      # Mesmo esquema do outro repositório:
+      # coloque o JSON COMPLETO do service account no segredo GOOGLE_CREDENTIALS
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 1) BD_Carteira → BD_Esteira
+        run: python bd_carteira_para_bd_esteira.py
+
+      - name: 2) Replicar BD_Esteira para destinos
+        run: python replicar_bd_esteira.py
