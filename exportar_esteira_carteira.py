@@ -27,7 +27,9 @@ SEG_INIT = 2000                # tamanho inicial do bloco de leitura
 SEG_MIN  = 200                 # não baixar abaixo disso
 
 def log(msg: str) -> None:
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    # Log sempre em horário de Brasília (UTC-3)
+    br_now = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
+    print(f"[{br_now.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def retry(fn, desc):
     for att in range(1, MAX_RETRIES+1):
@@ -75,7 +77,7 @@ def read_all_once(api):
     """Tenta ler A:AC de uma vez só (rápido)."""
     return api.values().get(
         spreadsheetId=ORIGEM_ID,
-        range=f"{ABA_ORIGEM}!A:AC"   # <<< inclui AC
+        range=f"{ABA_ORIGEM}!A:AC"   # inclui AC
     ).execute()
 
 def count_rows_adaptive(api):
@@ -96,7 +98,7 @@ def read_segmented(api, total: int):
     pos = 0
     while pos < total:
         r1 = min(pos + seg_size, total)
-        rng = f"{ABA_ORIGEM}!A{pos+1}:AC{r1}"  # <<< inclui AC
+        rng = f"{ABA_ORIGEM}!A{pos+1}:AC{r1}"  # inclui AC
         try:
             res = retry(lambda: api.values().get(
                 spreadsheetId=ORIGEM_ID, range=rng
@@ -148,7 +150,8 @@ def main():
         log("🔁 Fallback: leitura segmentada adaptativa.")
         total = count_rows_adaptive(api)
         if total == 0:
-            log("⚠️ Nenhuma linha encontrada na origem."); return
+            log("⚠️ Nenhuma linha encontrada na origem.")
+            return
         log(f"🔢 Total detectado: {total}")
         rows = read_segmented(api, total)
     else:
@@ -156,7 +159,8 @@ def main():
         log(f"🔢 Linhas carregadas: {total}")
 
     if total == 0:
-        log("⚠️ Nada para escrever."); return
+        log("⚠️ Nada para escrever.")
+        return
 
     # 3) Monta saída com cabeçalho preservado
     #    Colunas: A(0) → A; AB(27) → B; Z(25) → C; X(23) → D; AC(28) → E
@@ -194,18 +198,16 @@ def main():
         log(f"✅ Gravado {enviados}/{total}")
         time.sleep(0.2)
 
-    # 5) Timestamp em G2 da aba BD_Esteira
-    timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    log(f"🕒 Gravando timestamp em {ABA_DESTINO}!G2: {timestamp}")
-    retry(
-        lambda: api.values().update(
-            spreadsheetId=DESTINO_ID,
-            range=f"{ABA_DESTINO}!G2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [[timestamp]]}
-        ).execute(),
-        f"Gravar timestamp em {ABA_DESTINO}!G2"
-    )
+    # 5) Timestamp em G2 (horário Brasília)
+    br_now = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
+    timestamp = br_now.strftime("%d/%m/%Y %H:%M:%S")
+    retry(lambda: api.values().update(
+        spreadsheetId=DESTINO_ID,
+        range=f"{ABA_DESTINO}!G2",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[timestamp]]}
+    ).execute(), "Gravar timestamp em G2")
+    log(f"🕒 Timestamp gravado em {ABA_DESTINO}!G2: {timestamp}")
 
     log(f"🏁 Concluído: {enviados} linhas.")
 
