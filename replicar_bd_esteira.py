@@ -1,9 +1,4 @@
-# replicar_bd_esteira.py
-# -*- coding: utf-8 -*-
-
-import os
-import json
-import datetime, time, random, math, re
+import datetime, time, random, math, re, os, json
 from typing import List, Tuple, Optional
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -21,8 +16,8 @@ START_ROW   = 3
 ABA_FONTE   = "BD_Esteira"
 ABA_DESTINO = "BD_Esteira"
 
-# Caminho local para rodar NO WINDOWS
-CRED_FILE   = r"C:\Users\Sirtec\Desktop\Esteira\credenciais.json"
+# usado só como fallback local
+CRED_FILE   = "credenciais.json"
 
 SCOPES       = ["https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"]
@@ -44,6 +39,7 @@ DEFAULT_HEADER = [
 def log(msg: str):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+
 def retry(fn, desc: str):
     for att in range(1, MAX_RETRIES + 1):
         try:
@@ -54,26 +50,22 @@ def retry(fn, desc: str):
             time.sleep(wait)
     raise RuntimeError(f"{desc} — falhou após {MAX_RETRIES} tentativas.")
 
-# ======================== CREDENCIAIS ========================
-
-def get_credentials():
-    """
-    1) Se existir variável de ambiente GOOGLE_CREDENTIALS (GitHub Actions),
-       usa o JSON dela.
-    2) Senão, usa o arquivo local CRED_FILE (Windows).
-    """
-    env_json = os.getenv("GOOGLE_CREDENTIALS")
-    if env_json:
-        log("🔑 Usando GOOGLE_CREDENTIALS do ambiente.")
-        info = json.loads(env_json)
-        return Credentials.from_service_account_info(info, scopes=SCOPES)
-    else:
-        log(f"🔑 Usando arquivo local de credenciais: {CRED_FILE}")
-        return Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
 
 def get_api():
-    """Retorna o serviço completo do Sheets (para usar spreadsheets, values, batchUpdate, etc)."""
-    creds = get_credentials()
+    """Retorna o serviço completo do Sheets, lendo credenciais do secret GOOGLE_CREDENTIALS ou do arquivo local."""
+    env_json = os.getenv("GOOGLE_CREDENTIALS")
+    if env_json:
+        try:
+            info = json.loads(env_json)
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+            log("🔑 Credenciais carregadas de GOOGLE_CREDENTIALS (env).")
+        except Exception as e:
+            log(f"❌ Erro ao ler GOOGLE_CREDENTIALS, tentando credenciais.json: {e}")
+            creds = Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+    else:
+        log("ℹ️ GOOGLE_CREDENTIALS não definido, usando credenciais.json (local).")
+        creds = Credentials.from_service_account_file(CRED_FILE, scopes=SCOPES)
+
     http  = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
     return build("sheets", "v4", http=http)
 
@@ -84,6 +76,7 @@ def listar_abas(service, spreadsheet_id: str) -> List[str]:
         f"Ler metadados da planilha {spreadsheet_id}"
     )
     return [s.get("properties", {}).get("title", "") for s in meta.get("sheets", [])]
+
 
 def get_sheet_properties(service, spreadsheet_id: str, sheet_title: str) -> Optional[dict]:
     meta = retry(
@@ -100,6 +93,7 @@ def get_sheet_properties(service, spreadsheet_id: str, sheet_title: str) -> Opti
                 "cols": gp.get("columnCount", 26)
             }
     return None
+
 
 def ensure_sheet_size(service, spreadsheet_id: str, sheet_title: str,
                       min_rows: int, min_cols: int = 5):
@@ -147,11 +141,13 @@ def ensure_sheet_size(service, spreadsheet_id: str, sheet_title: str,
         f"Ajustar linhas/colunas de {spreadsheet_id}:{sheet_title}"
     )
 
+
 def col_letter_to_index(letter: str) -> int:
     n = 0
     for ch in letter.strip().upper():
         n = n * 26 + (ord(ch) - ord('A') + 1)
     return n
+
 
 def achar_aba_config(service) -> str:
     for nome in CONFIG_CANDIDATAS:
@@ -201,7 +197,9 @@ def ler_esteira_origem(service) -> List[List[str]]:
     )
     return res.get("values", [])
 
+
 _num_like = re.compile(r"^\s*[-+]?\d+([.,]\d+)?\s*$")
+
 
 def _tem_cabecalho_aparente(primeira_linha: List[str]) -> bool:
     for cel in (primeira_linha or []):
@@ -212,10 +210,12 @@ def _tem_cabecalho_aparente(primeira_linha: List[str]) -> bool:
             return True
     return False
 
+
 def obter_header(orig_values: List[List[str]]) -> List[str]:
     if orig_values and _tem_cabecalho_aparente(orig_values[0]):
         return (orig_values[0] + [""]*5)[:5]
     return DEFAULT_HEADER[:]
+
 
 def filtrar_por_col_E(values: List[List[str]], filtro: str) -> List[List[str]]:
     """Filtra linhas onde a coluna E == filtro; sempre inclui cabeçalho definido."""
@@ -233,6 +233,7 @@ def filtrar_por_col_E(values: List[List[str]], filtro: str) -> List[List[str]]:
 def planilha_tem_aba(service, spreadsheet_id: str, sheet_title: str) -> bool:
     return get_sheet_properties(service, spreadsheet_id, sheet_title) is not None
 
+
 def limpar_destino(service, dest_id: str, sheet_title: str):
     retry(
         lambda: service.spreadsheets().values().clear(
@@ -240,6 +241,7 @@ def limpar_destino(service, dest_id: str, sheet_title: str):
         ).execute(),
         f"Limpar {dest_id}:{sheet_title}"
     )
+
 
 def escrever_destino(service, dest_id: str, sheet_title: str, dados: List[List[str]]):
     if not dados:
@@ -309,6 +311,7 @@ def main():
             log(f"Erro inesperado em {dest_id}: {e}")
 
     log("Concluído com sucesso.")
+
 
 if __name__ == "__main__":
     main()
