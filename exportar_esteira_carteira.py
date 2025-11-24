@@ -75,7 +75,7 @@ def read_all_once(api):
     """Tenta ler A:AC de uma vez só (rápido)."""
     return api.values().get(
         spreadsheetId=ORIGEM_ID,
-        range=f"{ABA_ORIGEM}!A:AC"   # <<< agora inclui AC
+        range=f"{ABA_ORIGEM}!A:AC"   # <<< inclui AC
     ).execute()
 
 def count_rows_adaptive(api):
@@ -193,6 +193,19 @@ def main():
         enviados = r1
         log(f"✅ Gravado {enviados}/{total}")
         time.sleep(0.2)
+
+    # 5) Timestamp em G2 da aba BD_Esteira
+    timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    log(f"🕒 Gravando timestamp em {ABA_DESTINO}!G2: {timestamp}")
+    retry(
+        lambda: api.values().update(
+            spreadsheetId=DESTINO_ID,
+            range=f"{ABA_DESTINO}!G2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[timestamp]]}
+        ).execute(),
+        f"Gravar timestamp em {ABA_DESTINO}!G2"
+    )
 
     log(f"🏁 Concluído: {enviados} linhas.")
 
