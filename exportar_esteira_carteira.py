@@ -121,6 +121,58 @@ def read_segmented(api, total: int):
             seg_size = new_seg
     return rows
 
+def ensure_dest_rows(api, required_rows: int):
+    """
+    Garante que a aba de destino tenha pelo menos `required_rows` linhas
+    na grade (gridProperties.rowCount). Se não tiver, aumenta via batchUpdate.
+    """
+    # Busca propriedades da planilha de destino
+    ss = retry(
+        lambda: api.get(spreadsheetId=DESTINO_ID).execute(),
+        "Ler propriedades do destino"
+    )
+
+    sheet_props = None
+    for sh in ss.get("sheets", []):
+        props = sh.get("properties", {})
+        if props.get("title") == ABA_DESTINO:
+            sheet_props = props
+            break
+
+    if not sheet_props:
+        raise RuntimeError(f"❌ Aba destino '{ABA_DESTINO}' não encontrada no arquivo destino.")
+
+    sheet_id = sheet_props.get("sheetId")
+    current_rows = sheet_props.get("gridProperties", {}).get("rowCount", 0)
+
+    if current_rows >= required_rows:
+        log(f"📏 Linhas atuais em {ABA_DESTINO}: {current_rows} (>= {required_rows}) — nenhum ajuste necessário.")
+        return
+
+    log(f"📏 Aumentando linhas de {ABA_DESTINO}: {current_rows} → {required_rows}…")
+
+    body = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {
+                            "rowCount": required_rows
+                        }
+                    },
+                    "fields": "gridProperties.rowCount"
+                }
+            }
+        ]
+    }
+
+    retry(
+        lambda: api.batchUpdate(spreadsheetId=DESTINO_ID, body=body).execute(),
+        f"Aumentar linhas do destino para {required_rows}"
+    )
+    log(f"✅ Linhas de {ABA_DESTINO} ajustadas para {required_rows}.")
+
 def main():
     log("🚀 BD_Carteira → BD_Esteira (A→A, AB→B, Z→C, X→D, AC→E | leitura adaptativa)")
 
@@ -175,7 +227,10 @@ def main():
         ac = r[28]  # AC vai como está (sem limpeza)
         out.append([a, ab, z, x, ac])
 
-    # 4) Limpa destino e escreve A:E
+    # 4) Garante que o destino tem linhas suficientes
+    ensure_dest_rows(api, total)
+
+    # 5) Limpa destino e escreve A:E
     retry(lambda: api.values().clear(
         spreadsheetId=DESTINO_ID, range=f"{ABA_DESTINO}!A:E"
     ).execute(), "Limpar destino")
@@ -198,7 +253,7 @@ def main():
         log(f"✅ Gravado {enviados}/{total}")
         time.sleep(0.2)
 
-    # 5) Timestamp em G2 (horário Brasília)
+    # 6) Timestamp em G2 (horário Brasília)
     br_now = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
     timestamp = br_now.strftime("%d/%m/%Y %H:%M:%S")
     retry(lambda: api.values().update(
