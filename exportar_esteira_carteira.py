@@ -1,6 +1,7 @@
 import time, datetime, random, re, math, os, json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import google_auth_httplib2, httplib2
 
 # === CONFIG ===
@@ -12,19 +13,21 @@ ABA_DESTINO = "BD_Esteira"
 CRED_FILE = "credenciais.json"
 
 WRITE_CHUNK  = 1200
-MAX_RETRIES  = 8
+MAX_RETRIES  = 4
 BACKOFF_BASE = 3.0
-HTTP_TIMEOUT = 180
+HTTP_TIMEOUT = 60
+
+# Status HTTP em que insistir nao adianta (permissao, range invalido, aba
+# inexistente). Levanta na hora em vez de gastar MAX_RETRIES tentativas.
+STATUS_PERMANENTES = {400, 401, 403, 404}
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Leitura segmentada mais leve
-SEG_INIT = 800
-SEG_MIN  = 200
-SEG_MAX  = 2000
+# Colunas lidas da origem, na ordem em que sao usadas na saida.
+COLS_ORIGEM = ("A", "X", "Z", "AB", "AC")
 
 def log(msg: str) -> None:
     br_now = datetime.datetime.utcnow() - datetime.timedelta(hours=3)
@@ -34,10 +37,22 @@ def retry(fn, desc):
     for att in range(1, MAX_RETRIES + 1):
         try:
             return fn()
+        except HttpError as e:
+            if getattr(e, "resp", None) is not None and e.resp.status in STATUS_PERMANENTES:
+                log(f"❌ {desc} — erro permanente HTTP {e.resp.status}, sem retry: {e}")
+                raise
+            err = e
         except Exception as e:
-            wait = min(90, BACKOFF_BASE * (2 ** (att - 1)) + random.uniform(0, 1.5))
-            log(f"⚠️ {desc} — tentativa {att}/{MAX_RETRIES} falhou: {e} | aguardando {round(wait, 1)}s")
-            time.sleep(wait)
+            err = e
+
+        if att == MAX_RETRIES:
+            log(f"⚠️ {desc} — tentativa {att}/{MAX_RETRIES} falhou: {err}")
+            break
+
+        wait = min(30, BACKOFF_BASE * (2 ** (att - 1)) + random.uniform(0, 1.5))
+        log(f"⚠️ {desc} — tentativa {att}/{MAX_RETRIES} falhou: {err} | aguardando {round(wait, 1)}s")
+        time.sleep(wait)
+
     raise RuntimeError(f"❌ {desc} — falhou após {MAX_RETRIES} tentativas.")
 
 _num_re = re.compile(r"[^\d,.\-]")
@@ -74,66 +89,49 @@ def get_services():
     api = build("sheets", "v4", http=http).spreadsheets()
     return api
 
-def count_rows_adaptive(api):
+def ler_colunas(api):
     """
-    Conta linhas pela coluna A.
+    Lê todas as colunas necessárias da origem em UMA chamada (batchGet).
+
+    A versão anterior lia coluna por coluna em blocos adaptativos: ~80 requests
+    para 12k linhas. Como a origem às vezes leva minutos por request, cada bloco
+    lento era multiplicado por MAX_RETRIES e depois repetido com o segmento pela
+    metade — daí os runs de 3 a 6 horas.
+
+    Retorna (total, {letra: lista de tamanho `total`}).
     """
+    ranges = [f"{ABA_ORIGEM}!{c}:{c}" for c in COLS_ORIGEM]
+
     res = retry(
-        lambda: api.values().get(
+        lambda: api.values().batchGet(
             spreadsheetId=ORIGEM_ID,
-            range=f"{ABA_ORIGEM}!A:A"
+            ranges=ranges,
+            majorDimension="COLUMNS"
         ).execute(),
-        "Ler total de linhas (A:A)"
+        f"Ler colunas {'/'.join(COLS_ORIGEM)} da origem (batchGet)"
     )
-    return len(res.get("values", []))
 
-def read_col_segmented(api, col_letter: str, total: int):
-    """
-    Lê uma única coluna em blocos adaptativos.
-    Retorna lista com tamanho = total, preservando posições.
-    """
-    seg_size = SEG_INIT
-    values = []
-    pos = 0
+    brutas = []
+    for vr in res.get("valueRanges", []):
+        vals = vr.get("values") or [[]]
+        brutas.append(vals[0] if vals else [])
 
-    while pos < total:
-        r1 = min(pos + seg_size, total)
-        rng = f"{ABA_ORIGEM}!{col_letter}{pos+1}:{col_letter}{r1}"
+    if len(brutas) != len(COLS_ORIGEM):
+        raise RuntimeError(
+            f"❌ batchGet retornou {len(brutas)} faixas, esperado {len(COLS_ORIGEM)}."
+        )
 
-        try:
-            res = retry(
-                lambda: api.values().get(
-                    spreadsheetId=ORIGEM_ID,
-                    range=rng
-                ).execute(),
-                f"Ler bloco {col_letter} {pos+1}-{r1}"
-            )
+    # A coluna A define o total de linhas (mesmo critério da versão anterior).
+    total = len(brutas[0])
 
-            bloco = res.get("values", [])
-            flat = [row[0] if row else "" for row in bloco]
+    cols = {}
+    for letra, vals in zip(COLS_ORIGEM, brutas):
+        vals = list(vals[:total])
+        vals.extend([""] * (total - len(vals)))   # ranges abertos vêm truncados
+        cols[letra] = vals
+        log(f"📥 Coluna {letra}: {len(vals)} linhas")
 
-            # completa linhas ausentes
-            expected = r1 - pos
-            if len(flat) < expected:
-                flat.extend([""] * (expected - len(flat)))
-
-            values.extend(flat)
-            pos = r1
-
-            log(f"📥 Coluna {col_letter}: lido {len(values)}/{total}")
-            time.sleep(0.15)
-
-            if seg_size < SEG_MAX:
-                seg_size = min(seg_size + 100, SEG_MAX)
-
-        except Exception:
-            new_seg = max(seg_size // 2, SEG_MIN)
-            if new_seg == seg_size:
-                raise
-            log(f"🔻 Reduzindo segmento da coluna {col_letter}: {seg_size} → {new_seg}")
-            seg_size = new_seg
-
-    return values
+    return total, cols
 
 def ensure_dest_rows(api, required_rows: int):
     ss = retry(
@@ -191,21 +189,21 @@ def main():
 
     api = get_services()
 
-    # 1) Conta total de linhas
-    total = count_rows_adaptive(api)
+    # 1) Lê apenas as colunas necessárias, em uma única chamada
+    log("📥 Lendo colunas necessárias da origem (batchGet único)...")
+    total, cols = ler_colunas(api)
+
     if total == 0:
         log("⚠️ Nenhuma linha encontrada na origem.")
         return
 
     log(f"🔢 Total detectado: {total}")
 
-    # 2) Lê apenas as colunas necessárias
-    log("📥 Iniciando leitura segmentada somente das colunas necessárias...")
-    col_a  = read_col_segmented(api, "A",  total)
-    col_x  = read_col_segmented(api, "X",  total)
-    col_z  = read_col_segmented(api, "Z",  total)
-    col_ab = read_col_segmented(api, "AB", total)
-    col_ac = read_col_segmented(api, "AC", total)
+    col_a  = cols["A"]
+    col_x  = cols["X"]
+    col_z  = cols["Z"]
+    col_ab = cols["AB"]
+    col_ac = cols["AC"]
 
     # 3) Monta saída
     log("🧪 Preparando dados finais...")
