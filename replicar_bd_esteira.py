@@ -297,6 +297,8 @@ def main():
     tem_header = _tem_cabecalho_aparente(fonte[0]) if fonte else False
     log(f"Fonte carregada: {max(0, len(fonte)-(1 if tem_header else 0))} linhas + {'c/ cabeçalho' if tem_header else 's/ cabeçalho'}")
 
+    replicados, pulados, falhas = [], [], []
+
     for idx, (filtro, dest_id) in enumerate(pares, start=START_ROW):
         try:
             filtro_show = filtro or "(vazio)"
@@ -304,6 +306,7 @@ def main():
 
             if not planilha_tem_aba(service, dest_id, ABA_DESTINO):
                 log(f"Aviso: {dest_id} sem aba '{ABA_DESTINO}'. Pulando.")
+                pulados.append((dest_id, f"sem aba '{ABA_DESTINO}'"))
                 continue
 
             dados = filtrar_por_col_E(fonte, filtro)
@@ -327,11 +330,28 @@ def main():
                 f"Escrever timestamp em {dest_id}:{ABA_DESTINO}!G2"
             )
             log(f"🕒 Timestamp gravado em {dest_id} → {ABA_DESTINO}!G2: {timestamp}")
+            replicados.append(dest_id)
 
         except HttpError as he:
             log(f"Erro API em {dest_id}: {he}")
+            falhas.append((dest_id, f"HttpError: {he}"))
         except Exception as e:
             log(f"Erro inesperado em {dest_id}: {e}")
+            falhas.append((dest_id, str(e)))
+
+    # Antes, qualquer erro por destino era engolido e o script terminava com
+    # "Concluído com sucesso." e exit 0 - o run ficava verde mesmo se TODOS os
+    # destinos tivessem falhado.
+    log(f"Resumo: {len(replicados)} replicados, {len(pulados)} pulados, "
+        f"{len(falhas)} com erro (de {len(pares)} destinos).")
+
+    for dest_id, motivo in pulados:
+        log(f"  · pulado {dest_id}: {motivo}")
+
+    if falhas:
+        for dest_id, motivo in falhas:
+            log(f"  ✗ FALHA {dest_id}: {motivo}")
+        raise SystemExit(f"{len(falhas)}/{len(pares)} destinos falharam.")
 
     log("Concluído com sucesso.")
 
