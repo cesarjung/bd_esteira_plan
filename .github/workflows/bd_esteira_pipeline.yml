@@ -2,9 +2,13 @@ name: BD_Esteira Pipeline
 
 on:
   schedule:
-    # 09:00, 14:00, 17:00, 20:00 (Horário Brasília, UTC-3)
-    #  → 12, 17, 20, 23 em UTC
-    - cron: "0 12,17,20,23 * * *"
+    # 05:00, 08:00, 13:00, 18:00 (Horário Brasília, UTC-3)
+    #  → 8, 11, 16, 21 em UTC
+    #
+    # Dois runs fora do expediente (05h e 08h) garantem base fresca no início
+    # do dia com a origem calma. Os outros dois (13h e 18h) mantêm atualização
+    # durante o dia, aceitando que a origem esteja sendo editada.
+    - cron: "0 8,11,16,21 * * *"
   workflow_dispatch:
 
 # Um run por vez. O run novo cancela o anterior que ainda estiver preso,
