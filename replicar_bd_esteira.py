@@ -21,10 +21,14 @@ CRED_FILE   = "credenciais.json"
 
 SCOPES       = ["https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"]
-HTTP_TIMEOUT = 600
-MAX_RETRIES  = 8
+HTTP_TIMEOUT = 120
+MAX_RETRIES  = 4
 BACKOFF_BASE = 3.0
 WRITE_CHUNK  = 1500
+
+# Status HTTP em que insistir nao adianta (permissao, range invalido, aba
+# inexistente). Levanta na hora em vez de gastar MAX_RETRIES tentativas.
+STATUS_PERMANENTES = {400, 401, 403, 404}
 
 # Cabeçalho padrão solicitado:
 DEFAULT_HEADER = [
@@ -45,10 +49,22 @@ def retry(fn, desc: str):
     for att in range(1, MAX_RETRIES + 1):
         try:
             return fn()
+        except HttpError as e:
+            if getattr(e, "resp", None) is not None and e.resp.status in STATUS_PERMANENTES:
+                log(f"Erro permanente HTTP {e.resp.status} em {desc}, sem retry: {e}")
+                raise
+            err = e
         except Exception as e:
-            wait = min(90, BACKOFF_BASE * (2 ** (att - 1)) + random.uniform(0, 1.5))
-            log(f"Aviso: {desc} — tentativa {att}/{MAX_RETRIES} falhou: {e} | aguardando {round(wait,1)}s")
-            time.sleep(wait)
+            err = e
+
+        if att == MAX_RETRIES:
+            log(f"Aviso: {desc} — tentativa {att}/{MAX_RETRIES} falhou: {err}")
+            break
+
+        wait = min(30, BACKOFF_BASE * (2 ** (att - 1)) + random.uniform(0, 1.5))
+        log(f"Aviso: {desc} — tentativa {att}/{MAX_RETRIES} falhou: {err} | aguardando {round(wait,1)}s")
+        time.sleep(wait)
+
     raise RuntimeError(f"{desc} — falhou após {MAX_RETRIES} tentativas.")
 
 # ============== AUTENTICAÇÃO ==============

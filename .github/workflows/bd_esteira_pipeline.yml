@@ -7,9 +7,17 @@ on:
     - cron: "0 12,17,20,23 * * *"
   workflow_dispatch:
 
+# Um run por vez. O run novo cancela o anterior que ainda estiver preso,
+# evitando dois jobs escrevendo nas mesmas planilhas (causava HTTP 409).
+concurrency:
+  group: bd-esteira-pipeline
+  cancel-in-progress: true
+
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    # Sem isso o job vai ate o limite padrao de 6h quando a origem trava.
+    timeout-minutes: 25
 
     env:
       # Mesmo esquema do outro repositório:
@@ -24,6 +32,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
